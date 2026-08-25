@@ -51,3 +51,11 @@ OpsSentinel uses progressive action levels:
 This project is being built during the Agent Harness Hackathon.
 
 AI coding assistance is used during development and will be disclosed in the final submission. All code is reviewed, tested, and understood by the participant before being submitted.
+
+## Local development
+
+Create and activate a Python 3.12 virtual environment:
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
