@@ -1,0 +1,27 @@
+# Python cache
+__pycache__/
+*.py[cod]
+# Python package metadata
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+
+# Environment variables / secrets
+.env
+.env.*
+
+# Test and tooling caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# macOS
+.DS_Store
+
+# VS Code local settings
+.vscode/
+
+# Logs
+*.log
