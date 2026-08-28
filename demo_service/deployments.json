@@ -1,0 +1,18 @@
+[
+  {
+    "deployment_id": "deploy-001",
+    "service": "checkout-api",
+    "version": "1.0.0",
+    "deployed_at": "2026-08-28T06:45:00Z",
+    "status": "healthy",
+    "change": "Baseline stable checkout release"
+  },
+  {
+    "deployment_id": "deploy-002",
+    "service": "checkout-api",
+    "version": "1.1.0",
+    "deployed_at": "2026-08-28T07:50:00Z",
+    "status": "degraded",
+    "change": "Checkout processing optimization"
+  }
+]
