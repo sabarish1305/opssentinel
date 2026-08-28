@@ -2,15 +2,23 @@ import json
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
-
+from importlib.resources import files
 from mcp.server.mcpserver import MCPServer
-
-
+import subprocess
+import os
 SERVICE_HEALTH_URL = "http://127.0.0.1:8000/health"
 CHECKOUT_URL = "http://127.0.0.1:8000/checkout"
-
+DEPLOYMENT_HISTORY_PATH = files("opssentinel").joinpath(
+    "data",
+    "deployments.json",
+)
 mcp = MCPServer("OpsSentinel Tools")
+DEFAULT_DOCKER_CONTAINER_NAME = "opssentinel-checkout"
 
+
+def get_docker_container_name() -> str:
+    container_name = os.getenv("OPSSENTINEL_CONTAINER_NAME")
+    return container_name or DEFAULT_DOCKER_CONTAINER_NAME
 
 def fetch_service_health() -> dict:
     """Fetch the health state of the local Checkout API."""
@@ -115,7 +123,72 @@ def measure_latency(samples: int = 3) -> dict:
         "service": responses[-1],
     }
 
+def load_deployment_history() -> dict:
+    """Load the synthetic Checkout API deployment history."""
 
+    try:
+        with DEPLOYMENT_HISTORY_PATH.open("r", encoding="utf-8") as file:
+            deployments = json.load(file)
+
+        return {
+            "service": "checkout-api",
+            "deployment_count": len(deployments),
+            "deployments": deployments,
+        }
+
+    except FileNotFoundError:
+        return {
+            "error": "Deployment history file not found",
+        }
+
+    except json.JSONDecodeError as error:
+        return {
+            "error": f"Invalid deployment history JSON: {error.msg}",
+        }
+def fetch_service_logs(lines: int = 50) -> dict:
+    """Fetch recent logs from the Checkout API Docker container."""
+
+    if lines <= 0:
+        return {
+            "error": "lines must be greater than 0",
+        }
+    container_name = get_docker_container_name()
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "logs",
+                "--tail",
+                str(lines),
+                container_name,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+
+    except FileNotFoundError:
+        return {
+            "error": "Docker CLI not found",
+        }
+
+    except subprocess.TimeoutExpired:
+        return {
+            "error": "Docker log collection timed out",
+        }
+
+    if result.returncode != 0:
+        return {
+            "error": result.stdout.strip() or "Failed to read container logs",
+        }
+
+    return {
+        "container": container_name,
+        "lines_requested": lines,
+        "logs": result.stdout.strip().splitlines(),
+    }       
 @mcp.tool()
 def get_service_health() -> dict:
     """Check whether the local Checkout API is reachable and healthy."""
@@ -129,7 +202,16 @@ def measure_checkout_latency() -> dict:
 
     return measure_latency()
 
+@mcp.tool()
+def get_deployment_history() -> dict:
+    """Return recent deployment history for the Checkout API."""
 
+    return load_deployment_history()
+@mcp.tool()
+def get_service_logs() -> dict:
+    """Return recent runtime logs from the Checkout API container."""
+
+    return fetch_service_logs()
 if __name__ == "__main__":
     mcp.run(
         transport="streamable-http",

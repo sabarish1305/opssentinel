@@ -25,3 +25,5 @@ htmlcov/
 
 # Logs
 *.log
+build/
+dist/

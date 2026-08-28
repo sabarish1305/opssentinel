@@ -1,0 +1,13 @@
+services:
+  checkout-api:
+    build:
+      context: ./demo_service
+
+    container_name: ${OPSSENTINEL_CONTAINER_NAME:-opssentinel-checkout}
+
+    ports:
+      - "127.0.0.1:8000:8000"
+
+    environment:
+      SERVICE_VERSION: ${SERVICE_VERSION:-1.1.0}
+      DEGRADED: ${DEGRADED:-true}

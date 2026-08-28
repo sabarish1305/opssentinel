@@ -126,3 +126,177 @@ def test_measure_latency_rejects_negative_samples():
     result = mcp_server.measure_latency(samples=-1)
 
     assert result["error"] == "samples must be greater than 0"
+def test_load_deployment_history(monkeypatch, tmp_path):
+    history_file = tmp_path / "deployments.json"
+
+    history_file.write_text(
+        """
+        [
+          {
+            "deployment_id": "deploy-001",
+            "service": "checkout-api",
+            "version": "1.0.0",
+            "status": "healthy"
+          },
+          {
+            "deployment_id": "deploy-002",
+            "service": "checkout-api",
+            "version": "1.1.0",
+            "status": "degraded"
+          }
+        ]
+        """,
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        mcp_server,
+        "DEPLOYMENT_HISTORY_PATH",
+        history_file,
+    )
+
+    result = mcp_server.load_deployment_history()
+
+    assert result["service"] == "checkout-api"
+    assert result["deployment_count"] == 2
+    assert result["deployments"][0]["version"] == "1.0.0"
+    assert result["deployments"][1]["version"] == "1.1.0"
+
+
+def test_load_deployment_history_missing_file(monkeypatch, tmp_path):
+    missing_file = tmp_path / "missing.json"
+
+    monkeypatch.setattr(
+        mcp_server,
+        "DEPLOYMENT_HISTORY_PATH",
+        missing_file,
+    )
+
+    result = mcp_server.load_deployment_history()
+
+    assert result["error"] == "Deployment history file not found"
+
+
+def test_load_deployment_history_invalid_json(monkeypatch, tmp_path):
+    history_file = tmp_path / "deployments.json"
+    history_file.write_text("broken-json", encoding="utf-8")
+
+    monkeypatch.setattr(
+        mcp_server,
+        "DEPLOYMENT_HISTORY_PATH",
+        history_file,
+    )
+
+    result = mcp_server.load_deployment_history()
+
+    assert "Invalid deployment history JSON" in result["error"]
+def test_fetch_service_logs(monkeypatch):
+    class FakeResult:
+        returncode = 0
+        stdout = (
+            "[checkout-api] WARN version=1.1.0 "
+            "degraded_mode=true checkout_delay_ms=800\n"
+        )
+
+    monkeypatch.setattr(
+        mcp_server.subprocess,
+        "run",
+        lambda *args, **kwargs: FakeResult(),
+    )
+
+    result = mcp_server.fetch_service_logs(lines=50)
+
+    assert result["container"] == "opssentinel-checkout"
+    assert result["lines_requested"] == 50
+    assert result["logs"] == [
+        "[checkout-api] WARN version=1.1.0 "
+        "degraded_mode=true checkout_delay_ms=800"
+    ]
+
+
+def test_fetch_service_logs_rejects_nonpositive_lines():
+    result = mcp_server.fetch_service_logs(lines=0)
+
+    assert result["error"] == "lines must be greater than 0"
+
+
+def test_fetch_service_logs_docker_not_found(monkeypatch):
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError
+
+    monkeypatch.setattr(
+        mcp_server.subprocess,
+        "run",
+        fake_run,
+    )
+
+    result = mcp_server.fetch_service_logs()
+
+    assert result["error"] == "Docker CLI not found"
+
+
+def test_fetch_service_logs_timeout(monkeypatch):
+    def fake_run(*args, **kwargs):
+        raise mcp_server.subprocess.TimeoutExpired(
+            cmd="docker",
+            timeout=5,
+        )
+
+    monkeypatch.setattr(
+        mcp_server.subprocess,
+        "run",
+        fake_run,
+    )
+
+    result = mcp_server.fetch_service_logs()
+
+    assert result["error"] == "Docker log collection timed out"
+
+
+def test_fetch_service_logs_command_failure(monkeypatch):
+    class FakeResult:
+        returncode = 1
+        stdout = "Error: No such container: opssentinel-checkout"
+
+    monkeypatch.setattr(
+        mcp_server.subprocess,
+        "run",
+        lambda *args, **kwargs: FakeResult(),
+    )
+
+    result = mcp_server.fetch_service_logs()
+
+    assert "No such container" in result["error"]
+def test_fetch_service_logs_uses_configured_container(monkeypatch):
+    captured = {}
+
+    class FakeResult:
+        returncode = 0
+        stdout = "checkout log\n"
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return FakeResult()
+
+    monkeypatch.setenv(
+        "OPSSENTINEL_CONTAINER_NAME",
+        "custom-checkout",
+    )
+
+    monkeypatch.setattr(
+        mcp_server.subprocess,
+        "run",
+        fake_run,
+    )
+
+    result = mcp_server.fetch_service_logs()
+
+    assert captured["command"][-1] == "custom-checkout"
+    assert result["container"] == "custom-checkout"
+def test_get_docker_container_name_uses_default_when_empty(monkeypatch):
+    monkeypatch.setenv("OPSSENTINEL_CONTAINER_NAME", "")
+
+    assert (
+        mcp_server.get_docker_container_name()
+        == mcp_server.DEFAULT_DOCKER_CONTAINER_NAME
+    )
