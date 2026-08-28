@@ -17,10 +17,8 @@ DEFAULT_DOCKER_CONTAINER_NAME = "opssentinel-checkout"
 
 
 def get_docker_container_name() -> str:
-    return os.getenv(
-        "OPSSENTINEL_CONTAINER_NAME",
-        DEFAULT_DOCKER_CONTAINER_NAME,
-    )
+    container_name = os.getenv("OPSSENTINEL_CONTAINER_NAME")
+    return container_name or DEFAULT_DOCKER_CONTAINER_NAME
 
 def fetch_service_health() -> dict:
     """Fetch the health state of the local Checkout API."""

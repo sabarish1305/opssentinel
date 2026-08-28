@@ -293,3 +293,10 @@ def test_fetch_service_logs_uses_configured_container(monkeypatch):
 
     assert captured["command"][-1] == "custom-checkout"
     assert result["container"] == "custom-checkout"
+def test_get_docker_container_name_uses_default_when_empty(monkeypatch):
+    monkeypatch.setenv("OPSSENTINEL_CONTAINER_NAME", "")
+
+    assert (
+        mcp_server.get_docker_container_name()
+        == mcp_server.DEFAULT_DOCKER_CONTAINER_NAME
+    )
