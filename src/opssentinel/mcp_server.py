@@ -2,16 +2,25 @@ import json
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
-from pathlib import Path
+from importlib.resources import files
 from mcp.server.mcpserver import MCPServer
 import subprocess
-
+import os
 SERVICE_HEALTH_URL = "http://127.0.0.1:8000/health"
 CHECKOUT_URL = "http://127.0.0.1:8000/checkout"
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEPLOYMENT_HISTORY_PATH = PROJECT_ROOT / "demo_service" / "deployments.json"
+DEPLOYMENT_HISTORY_PATH = files("opssentinel").joinpath(
+    "data",
+    "deployments.json",
+)
 mcp = MCPServer("OpsSentinel Tools")
-DOCKER_CONTAINER_NAME = "opssentinel-checkout"
+DEFAULT_DOCKER_CONTAINER_NAME = "opssentinel-checkout"
+
+
+def get_docker_container_name() -> str:
+    return os.getenv(
+        "OPSSENTINEL_CONTAINER_NAME",
+        DEFAULT_DOCKER_CONTAINER_NAME,
+    )
 
 def fetch_service_health() -> dict:
     """Fetch the health state of the local Checkout API."""
@@ -145,7 +154,7 @@ def fetch_service_logs(lines: int = 50) -> dict:
         return {
             "error": "lines must be greater than 0",
         }
-
+    container_name = get_docker_container_name()
     try:
         result = subprocess.run(
             [
@@ -153,7 +162,7 @@ def fetch_service_logs(lines: int = 50) -> dict:
                 "logs",
                 "--tail",
                 str(lines),
-                DOCKER_CONTAINER_NAME,
+                container_name,
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -178,7 +187,7 @@ def fetch_service_logs(lines: int = 50) -> dict:
         }
 
     return {
-        "container": DOCKER_CONTAINER_NAME,
+        "container": container_name,
         "lines_requested": lines,
         "logs": result.stdout.strip().splitlines(),
     }       

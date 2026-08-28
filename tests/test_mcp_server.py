@@ -267,3 +267,29 @@ def test_fetch_service_logs_command_failure(monkeypatch):
     result = mcp_server.fetch_service_logs()
 
     assert "No such container" in result["error"]
+def test_fetch_service_logs_uses_configured_container(monkeypatch):
+    captured = {}
+
+    class FakeResult:
+        returncode = 0
+        stdout = "checkout log\n"
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return FakeResult()
+
+    monkeypatch.setenv(
+        "OPSSENTINEL_CONTAINER_NAME",
+        "custom-checkout",
+    )
+
+    monkeypatch.setattr(
+        mcp_server.subprocess,
+        "run",
+        fake_run,
+    )
+
+    result = mcp_server.fetch_service_logs()
+
+    assert captured["command"][-1] == "custom-checkout"
+    assert result["container"] == "custom-checkout"

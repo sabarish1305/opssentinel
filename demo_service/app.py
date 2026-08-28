@@ -19,7 +19,7 @@ class CheckoutHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
         self.wfile.write(body)
-
+    
     def do_GET(self) -> None:
         if self.path == "/health":
             self.send_json(
@@ -35,30 +35,29 @@ class CheckoutHandler(BaseHTTPRequestHandler):
         if self.path == "/checkout":
             if DEGRADED:
                 print(
-                f"[checkout-api] WARN version={SERVICE_VERSION} "
-                "degraded_mode=true checkout_delay_ms=800",
-                flush=True,
+                    f"[checkout-api] WARN version={SERVICE_VERSION} "
+                    "degraded_mode=true checkout_delay_ms=800",
+                    flush=True,
                 )
                 time.sleep(0.8)
-
             else:
                 print(
-                f"[checkout-api] INFO version={SERVICE_VERSION} "
-                "degraded_mode=false checkout_delay_ms=80",
-                flush=True,
+                    f"[checkout-api] INFO version={SERVICE_VERSION} "
+                    "degraded_mode=false checkout_delay_ms=80",
+                    flush=True,
                 )
                 time.sleep(0.08)
-
-        self.send_json(
-            200,
-            {
-                "service": SERVICE_NAME,
-                "version": SERVICE_VERSION,
-                "checkout": "completed",
-                "mode": "degraded" if DEGRADED else "normal",
-            },
-        )
-        return
+            self.send_json(
+                200,
+                {
+                    "service": SERVICE_NAME,
+                    "version": SERVICE_VERSION,
+                    "checkout": "completed",
+                    "mode": "degraded" if DEGRADED else "normal",
+                },
+            )
+            
+            return
 
         self.send_json(
             404,
@@ -66,7 +65,6 @@ class CheckoutHandler(BaseHTTPRequestHandler):
                 "error": "not_found",
             },
         )
-
     def log_message(self, format: str, *args) -> None:
         print(f"[checkout-api] {format % args}")
 
