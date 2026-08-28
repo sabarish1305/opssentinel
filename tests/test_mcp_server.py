@@ -34,6 +34,31 @@ def test_fetch_service_health(monkeypatch):
     assert result["service"]["version"] == "1.0.0"
 
 
+def test_fetch_service_health_timeout(monkeypatch):
+    def fake_urlopen(url, timeout):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(mcp_server, "urlopen", fake_urlopen)
+
+    result = mcp_server.fetch_service_health()
+
+    assert result["reachable"] is False
+    assert result["error"] == "Request timed out"
+
+
+def test_fetch_service_health_invalid_json(monkeypatch):
+    def fake_urlopen(url, timeout):
+        return FakeResponse("this-is-not-json")
+
+    monkeypatch.setattr(mcp_server, "urlopen", fake_urlopen)
+
+    result = mcp_server.fetch_service_health()
+
+    assert result["reachable"] is True
+    assert result["http_status"] == 200
+    assert "Invalid JSON response" in result["error"]
+
+
 def test_measure_latency(monkeypatch):
     def fake_urlopen(url, timeout):
         return FakeResponse(
@@ -64,3 +89,40 @@ def test_measure_latency(monkeypatch):
     assert result["samples"] == 3
     assert result["latencies_ms"] == [100.0, 100.0, 100.0]
     assert result["average_latency_ms"] == 100.0
+
+
+def test_measure_latency_timeout(monkeypatch):
+    def fake_urlopen(url, timeout):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(mcp_server, "urlopen", fake_urlopen)
+
+    result = mcp_server.measure_latency(samples=1)
+
+    assert result["reachable"] is False
+    assert result["error"] == "Request timed out"
+
+
+def test_measure_latency_invalid_json(monkeypatch):
+    def fake_urlopen(url, timeout):
+        return FakeResponse("broken-json")
+
+    monkeypatch.setattr(mcp_server, "urlopen", fake_urlopen)
+
+    result = mcp_server.measure_latency(samples=1)
+
+    assert result["reachable"] is True
+    assert result["http_status"] == 200
+    assert "Invalid JSON response" in result["error"]
+
+
+def test_measure_latency_rejects_zero_samples():
+    result = mcp_server.measure_latency(samples=0)
+
+    assert result["error"] == "samples must be greater than 0"
+
+
+def test_measure_latency_rejects_negative_samples():
+    result = mcp_server.measure_latency(samples=-1)
+
+    assert result["error"] == "samples must be greater than 0"
