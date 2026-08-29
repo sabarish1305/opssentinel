@@ -302,15 +302,18 @@ def test_get_docker_container_name_uses_default_when_empty(monkeypatch):
     )
 def test_prepare_rollback(monkeypatch):
     monkeypatch.setattr(
-        mcp_server,
-        "fetch_service_health",
-        lambda: {
-            "reachable": True,
+    mcp_server,
+    "fetch_service_health",
+    lambda: {
+        "reachable": True,
+        "http_status": 200,
+        "service": {
             "service": "checkout-api",
             "status": "degraded",
             "version": "1.1.0",
         },
-    )
+    },
+)
 
     monkeypatch.setattr(
         mcp_server,
@@ -360,6 +363,37 @@ def test_prepare_rollback_rejects_unreachable_service(monkeypatch):
     assert result["ready"] is False
     assert "health" in result["error"].lower()
 
+def test_prepare_rollback_rejects_http_error_health(monkeypatch):
+    monkeypatch.setattr(
+        mcp_server,
+        "fetch_service_health",
+        lambda: {
+            "reachable": True,
+            "http_status": 500,
+            "error": "Internal Server Error",
+        },
+    )
+
+    result = mcp_server.prepare_rollback()
+
+    assert result["ready"] is False
+    assert "HTTP 200" in result["error"]
+
+def test_prepare_rollback_rejects_invalid_health_payload(monkeypatch):
+    monkeypatch.setattr(
+        mcp_server,
+        "fetch_service_health",
+        lambda: {
+            "reachable": True,
+            "http_status": 200,
+            "service": None,
+        },
+    )
+
+    result = mcp_server.prepare_rollback()
+
+    assert result["ready"] is False
+    assert "payload" in result["error"].lower()
 
 def test_prepare_rollback_rejects_missing_history(monkeypatch):
     monkeypatch.setattr(
@@ -367,10 +401,14 @@ def test_prepare_rollback_rejects_missing_history(monkeypatch):
         "fetch_service_health",
         lambda: {
             "reachable": True,
-            "service": "checkout-api",
-            "version": "1.1.0",
+            "http_status": 200,
+            "service": {
+                "service": "checkout-api",
+                "status": "degraded",
+                "version": "1.1.0",
+            },
         },
-    )
+    ),
 
     monkeypatch.setattr(
         mcp_server,
@@ -392,11 +430,15 @@ def test_prepare_rollback_when_already_healthy_version(monkeypatch):
         "fetch_service_health",
         lambda: {
             "reachable": True,
-            "service": "checkout-api",
-            "status": "healthy",
-            "version": "1.0.0",
+            "http_status": 200,
+            "service": {
+                "service": "checkout-api",
+                "status": "healthy",
+                "version": "1.0.0",
+            },
         },
-    )
+    ),
+
 
     monkeypatch.setattr(
         mcp_server,
@@ -419,15 +461,35 @@ def test_prepare_rollback_when_already_healthy_version(monkeypatch):
     assert result["rollback_needed"] is False
     assert result["current_version"] == "1.0.0"
 def test_execute_rollback_success(monkeypatch):
+    mcp_server.rollback_plans.clear()
+    mcp_server.rollback_approvals.clear()
+
+    monkeypatch.setenv(
+        mcp_server.APPROVAL_SECRET_ENV,
+    "test-approval-secret",
+    )
+
+    plan_id = "plan-success"
+    mcp_server.rollback_plans[plan_id] = {
+        "service": "checkout-api",
+        "current_version": "1.1.0",
+        "target_version": "1.0.0",
+        "target_deployment_id": "deploy-001",
+    }
+
+    approval_token = mcp_server.create_rollback_approval_token(plan_id)
+
     monkeypatch.setattr(
         mcp_server,
-        "prepare_rollback",
+        "fetch_service_health",
         lambda: {
-            "ready": True,
-            "service": "checkout-api",
-            "current_version": "1.1.0",
-            "target_version": "1.0.0",
-            "target_deployment_id": "deploy-001",
+            "reachable": True,
+            "http_status": 200,
+            "service": {
+                "service": "checkout-api",
+                "status": "degraded",
+                "version": "1.1.0",
+            },
         },
     )
 
@@ -444,8 +506,11 @@ def test_execute_rollback_success(monkeypatch):
 
     monkeypatch.setattr(mcp_server.subprocess, "run", fake_run)
 
-    result = mcp_server.execute_rollback("1.0.0")
-
+    result = mcp_server.execute_rollback(
+    plan_id,
+    approval_token,
+    "1.0.0",
+    )
     assert result["executed"] is True
     assert result["previous_version"] == "1.1.0"
     assert result["target_version"] == "1.0.0"
@@ -454,6 +519,8 @@ def test_execute_rollback_success(monkeypatch):
     assert captured["command"] == [
         "docker",
         "compose",
+        "--file",
+        str(mcp_server.DEFAULT_COMPOSE_FILE),
         "up",
         "-d",
         "--force-recreate",
@@ -466,44 +533,77 @@ def test_execute_rollback_success(monkeypatch):
 
 
 def test_execute_rollback_rejects_wrong_target(monkeypatch):
-    monkeypatch.setattr(
-        mcp_server,
-        "prepare_rollback",
-        lambda: {
-            "ready": True,
-            "target_version": "1.0.0",
-        },
+    mcp_server.rollback_plans.clear()
+    mcp_server.rollback_approvals.clear()
+
+    monkeypatch.setenv(
+        mcp_server.APPROVAL_SECRET_ENV,
+        "test-approval-secret",
     )
 
-    result = mcp_server.execute_rollback("0.9.0")
+    plan_id = "plan-wrong-target"
+
+    mcp_server.rollback_plans[plan_id] = {
+        "service": "checkout-api",
+        "current_version": "1.1.0",
+        "target_version": "1.0.0",
+        "target_deployment_id": "deploy-001",
+    }
+    approval_token = mcp_server.create_rollback_approval_token(plan_id)
+
+    result = mcp_server.execute_rollback(
+        plan_id,
+        approval_token,
+        "0.9.0",
+    )
 
     assert result["executed"] is False
     assert "does not match" in result["error"]
 
 
-def test_execute_rollback_rejects_unready_plan(monkeypatch):
-    monkeypatch.setattr(
-        mcp_server,
-        "prepare_rollback",
-        lambda: {
-            "ready": False,
-            "error": "No known healthy deployment is available for rollback.",
-        },
+def test_execute_rollback_rejects_unknown_plan(monkeypatch):
+    mcp_server.rollback_plans.clear()
+    mcp_server.rollback_approvals.clear()
+
+    result = mcp_server.execute_rollback(
+        "missing-plan",
+        "unused-token",
+        "1.0.0",
     )
 
-    result = mcp_server.execute_rollback("1.0.0")
-
     assert result["executed"] is False
-    assert "healthy deployment" in result["error"].lower()
+    assert "unknown rollback plan" in result["error"].lower()
 
 
 def test_execute_rollback_handles_docker_missing(monkeypatch):
+    mcp_server.rollback_plans.clear()
+    mcp_server.rollback_approvals.clear()
+
+    monkeypatch.setenv(
+        mcp_server.APPROVAL_SECRET_ENV,
+        "test-approval-secret",
+    )
+
+    plan_id = "plan-docker-missing"
+    mcp_server.rollback_plans[plan_id] = {
+        "service": "checkout-api",
+        "current_version": "1.1.0",
+        "target_version": "1.0.0",
+        "target_deployment_id": "deploy-001",
+    }
+    approval_token = mcp_server.create_rollback_approval_token(plan_id)
+
     monkeypatch.setattr(
         mcp_server,
-        "prepare_rollback",
+        "fetch_service_health",
         lambda: {
-            "ready": True,
-            "target_version": "1.0.0",
+            "reachable": True,
+            "http_status": 200,
+            "service": {
+                "service": "checkout-api",
+                "status": "degraded",
+                "version": "1.1.0",
+            },
         },
     )
 
@@ -512,21 +612,60 @@ def test_execute_rollback_handles_docker_missing(monkeypatch):
 
     monkeypatch.setattr(mcp_server.subprocess, "run", fake_run)
 
-    result = mcp_server.execute_rollback("1.0.0")
+    result = mcp_server.execute_rollback(
+    plan_id,
+    approval_token,
+    "1.0.0",
+    )
 
     assert result["executed"] is False
     assert result["error"] == "Docker CLI not found."
 
 
 def test_execute_rollback_handles_timeout(monkeypatch):
+    mcp_server.rollback_plans.clear()
+    mcp_server.rollback_approvals.clear()
+
+    monkeypatch.setenv(
+        mcp_server.APPROVAL_SECRET_ENV,
+        "test-approval-secret",
+    )
+
+    plan_id = "plan-timeout"
+
+    mcp_server.rollback_plans[plan_id] = {
+        "service": "checkout-api",
+        "current_version": "1.1.0",
+        "target_version": "1.0.0",
+        "target_deployment_id": "deploy-001",
+    }
+    approval_token = mcp_server.create_rollback_approval_token(plan_id)
+    health_responses = iter(
+        [
+            {
+                "reachable": True,
+                "http_status": 200,
+                "service": {
+                    "service": "checkout-api",
+                    "status": "degraded",
+                    "version": "1.1.0",
+                },
+            },
+
+            {
+                "reachable": False,
+                "error": "Service unavailable",
+            },
+        ]
+    )
+
     monkeypatch.setattr(
         mcp_server,
-        "prepare_rollback",
-        lambda: {
-            "ready": True,
-            "target_version": "1.0.0",
-        },
+        "fetch_service_health",
+        lambda: next(health_responses),
     )
+
+
 
     def fake_run(*args, **kwargs):
         raise mcp_server.subprocess.TimeoutExpired(
@@ -536,7 +675,311 @@ def test_execute_rollback_handles_timeout(monkeypatch):
 
     monkeypatch.setattr(mcp_server.subprocess, "run", fake_run)
 
-    result = mcp_server.execute_rollback("1.0.0")
+    result = mcp_server.execute_rollback(
+    plan_id,
+    approval_token,
+    "1.0.0",
+    )
+
+    assert result["executed"] is None
+    assert result["outcome"] == "indeterminate"
+    assert result["verification_required"] is True
+    assert "timed out" in result["error"].lower()
+    assert "could not be confirmed" in result["error"].lower()
+
+def test_execute_rollback_timeout_but_target_is_running(monkeypatch):
+    mcp_server.rollback_plans.clear()
+    mcp_server.rollback_approvals.clear()
+
+    monkeypatch.setenv(
+        mcp_server.APPROVAL_SECRET_ENV,
+        "test-approval-secret",
+    )
+
+    plan_id = "plan-timeout-success"
+
+    mcp_server.rollback_plans[plan_id] = {
+        "service": "checkout-api",
+        "current_version": "1.1.0",
+        "target_version": "1.0.0",
+        "target_deployment_id": "deploy-001",
+    }
+
+    approval_token = mcp_server.create_rollback_approval_token(plan_id)
+
+    health_responses = iter(
+        [
+            {
+                "reachable": True,
+                "http_status": 200,
+                "service": {
+                    "service": "checkout-api",
+                    "status": "degraded",
+                    "version": "1.1.0",
+                },
+            },
+            {
+                "reachable": True,
+                "http_status": 200,
+                "service": {
+                    "service": "checkout-api",
+                    "status": "healthy",
+                    "version": "1.0.0",
+                },
+            },
+        ]
+    )
+
+    monkeypatch.setattr(
+        mcp_server,
+        "fetch_service_health",
+        lambda: next(health_responses),
+    )
+
+    def fake_run(*args, **kwargs):
+        raise mcp_server.subprocess.TimeoutExpired(
+            cmd="docker compose",
+            timeout=30,
+        )
+
+    monkeypatch.setattr(
+        mcp_server.subprocess,
+        "run",
+        fake_run,
+    )
+
+    result = mcp_server.execute_rollback(
+        plan_id,
+        approval_token,
+        "1.0.0",
+    )
+
+    assert result["executed"] is True
+    assert result["outcome"] == "succeeded_after_timeout"
+    assert result["target_version"] == "1.0.0"
+    assert result["observed_version"] == "1.0.0"
+    assert result["verification_required"] is True
+
+def test_execute_rollback_rejects_missing_approval(monkeypatch):
+    mcp_server.rollback_plans.clear()
+    mcp_server.rollback_approvals.clear()
+
+    plan_id = "plan-missing-approval"
+
+    mcp_server.rollback_plans[plan_id] = {
+        "service": "checkout-api",
+        "current_version": "1.1.0",
+        "target_version": "1.0.0",
+        "target_deployment_id": "deploy-001",
+    }
+
+    result = mcp_server.execute_rollback(
+        plan_id,
+        "missing-token",
+        "1.0.0",
+    )
 
     assert result["executed"] is False
-    assert result["error"] == "Rollback command timed out."
+    assert "approval" in result["error"].lower()
+
+def test_execute_rollback_rejects_expired_approval(monkeypatch):
+    mcp_server.rollback_plans.clear()
+    mcp_server.rollback_approvals.clear()
+
+    monkeypatch.setenv(
+        mcp_server.APPROVAL_SECRET_ENV,
+        "test-approval-secret",
+    )
+
+    current_time = [1000.0]
+
+    monkeypatch.setattr(
+        mcp_server.time,
+        "time",
+        lambda: current_time[0],
+    )
+
+    plan_id = "plan-expired"
+
+    mcp_server.rollback_plans[plan_id] = {
+        "service": "checkout-api",
+        "current_version": "1.1.0",
+        "target_version": "1.0.0",
+        "target_deployment_id": "deploy-001",
+    }
+
+    approval_token = mcp_server.create_rollback_approval_token(plan_id)
+
+    current_time[0] += mcp_server.ROLLBACK_APPROVAL_TTL_SECONDS + 1
+
+    result = mcp_server.execute_rollback(
+        plan_id,
+        approval_token,
+        "1.0.0",
+    )
+
+    assert result["executed"] is False
+    assert "expired" in result["error"].lower()
+
+def test_execute_rollback_rejects_reused_approval(monkeypatch):
+    mcp_server.rollback_plans.clear()
+    mcp_server.rollback_approvals.clear()
+
+    monkeypatch.setenv(
+        mcp_server.APPROVAL_SECRET_ENV,
+        "test-approval-secret",
+    )
+
+    plan_id = "plan-reused"
+
+    mcp_server.rollback_plans[plan_id] = {
+        "service": "checkout-api",
+        "current_version": "1.1.0",
+        "target_version": "1.0.0",
+        "target_deployment_id": "deploy-001",
+    }
+
+    approval_token = mcp_server.create_rollback_approval_token(plan_id)
+
+    mcp_server.rollback_approvals[approval_token]["used"] = True
+
+    result = mcp_server.execute_rollback(
+        plan_id,
+        approval_token,
+        "1.0.0",
+    )
+
+    assert result["executed"] is False
+    assert "already been used" in result["error"].lower()
+
+def test_execute_rollback_rejects_mismatched_plan(monkeypatch):
+    mcp_server.rollback_plans.clear()
+    mcp_server.rollback_approvals.clear()
+
+    monkeypatch.setenv(
+        mcp_server.APPROVAL_SECRET_ENV,
+        "test-approval-secret",
+    )
+
+    plan_a = "plan-a"
+    plan_b = "plan-b"
+
+    mcp_server.rollback_plans[plan_a] = {
+        "service": "checkout-api",
+        "current_version": "1.1.0",
+        "target_version": "1.0.0",
+        "target_deployment_id": "deploy-001",
+    }
+
+    mcp_server.rollback_plans[plan_b] = {
+        "service": "checkout-api",
+        "current_version": "1.1.0",
+        "target_version": "1.0.0",
+        "target_deployment_id": "deploy-001",
+    }
+
+    approval_token = mcp_server.create_rollback_approval_token(plan_a)
+
+    result = mcp_server.execute_rollback(
+        plan_b,
+        approval_token,
+        "1.0.0",
+    )
+
+    assert result["executed"] is False
+    assert "signature is invalid" in result["error"].lower()
+
+def test_execute_rollback_rejects_forged_approval(monkeypatch):
+    mcp_server.rollback_plans.clear()
+    mcp_server.rollback_approvals.clear()
+
+    monkeypatch.setenv(
+        mcp_server.APPROVAL_SECRET_ENV,
+        "test-approval-secret",
+    )
+
+    plan_id = "plan-forged"
+
+    mcp_server.rollback_plans[plan_id] = {
+        "service": "checkout-api",
+        "current_version": "1.1.0",
+        "target_version": "1.0.0",
+        "target_deployment_id": "deploy-001",
+    }
+
+    approval_token = mcp_server.create_rollback_approval_token(plan_id)
+
+    expires_at, nonce, _signature = approval_token.split(".", 2)
+
+    forged_token = (
+        f"{expires_at}.{nonce}."
+        f"{'0' * 64}"
+    )
+
+    # Simulate a token that exists in approval state but has been tampered with.
+    mcp_server.rollback_approvals[forged_token] = {
+        "plan_id": plan_id,
+        "expires_at": int(expires_at),
+        "used": False,
+    }
+
+    result = mcp_server.execute_rollback(
+        plan_id,
+        forged_token,
+        "1.0.0",
+    )
+
+    assert result["executed"] is False
+    assert "signature" in result["error"].lower()
+
+def test_execute_rollback_rejects_changed_service_state(monkeypatch):
+    mcp_server.rollback_plans.clear()
+    mcp_server.rollback_approvals.clear()
+
+    monkeypatch.setenv(
+        mcp_server.APPROVAL_SECRET_ENV,
+        "test-approval-secret",
+    )
+
+    plan_id = "plan-state-changed"
+
+    mcp_server.rollback_plans[plan_id] = {
+        "service": "checkout-api",
+        "current_version": "1.1.0",
+        "target_version": "1.0.0",
+        "target_deployment_id": "deploy-001",
+    }
+
+    approval_token = mcp_server.create_rollback_approval_token(plan_id)
+
+    monkeypatch.setattr(
+        mcp_server,
+        "fetch_service_health",
+        lambda: {
+            "reachable": True,
+            "http_status": 200,
+            "service": {
+                "service": "checkout-api",
+                "status": "degraded",
+                "version": "1.2.0",
+            },
+        },
+    )
+
+    def fail_if_docker_runs(*args, **kwargs):
+        raise AssertionError("Docker must not run for a stale approval.")
+
+    monkeypatch.setattr(
+        mcp_server.subprocess,
+        "run",
+        fail_if_docker_runs,
+    )
+
+    result = mcp_server.execute_rollback(
+        plan_id,
+        approval_token,
+        "1.0.0",
+    )
+
+    assert result["executed"] is False
+    assert "state changed" in result["error"].lower()
