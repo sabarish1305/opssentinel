@@ -300,3 +300,243 @@ def test_get_docker_container_name_uses_default_when_empty(monkeypatch):
         mcp_server.get_docker_container_name()
         == mcp_server.DEFAULT_DOCKER_CONTAINER_NAME
     )
+def test_prepare_rollback(monkeypatch):
+    monkeypatch.setattr(
+        mcp_server,
+        "fetch_service_health",
+        lambda: {
+            "reachable": True,
+            "service": "checkout-api",
+            "status": "degraded",
+            "version": "1.1.0",
+        },
+    )
+
+    monkeypatch.setattr(
+        mcp_server,
+        "load_deployment_history",
+        lambda: {
+            "service": "checkout-api",
+            "deployment_count": 2,
+            "deployments": [
+                {
+                    "deployment_id": "deploy-001",
+                    "version": "1.0.0",
+                    "deployed_at": "2026-08-28T06:45:00Z",
+                    "status": "healthy",
+                },
+                {
+                    "deployment_id": "deploy-002",
+                    "version": "1.1.0",
+                    "deployed_at": "2026-08-28T07:50:00Z",
+                    "status": "degraded",
+                },
+            ],
+        },
+    )
+
+    result = mcp_server.prepare_rollback()
+
+    assert result["ready"] is True
+    assert result["rollback_needed"] is True
+    assert result["current_version"] == "1.1.0"
+    assert result["target_version"] == "1.0.0"
+    assert result["requires_human_approval"] is True
+    assert result["next_action"] == "execute_rollback"
+
+
+def test_prepare_rollback_rejects_unreachable_service(monkeypatch):
+    monkeypatch.setattr(
+        mcp_server,
+        "fetch_service_health",
+        lambda: {
+            "reachable": False,
+            "error": "Request timed out",
+        },
+    )
+
+    result = mcp_server.prepare_rollback()
+
+    assert result["ready"] is False
+    assert "health" in result["error"].lower()
+
+
+def test_prepare_rollback_rejects_missing_history(monkeypatch):
+    monkeypatch.setattr(
+        mcp_server,
+        "fetch_service_health",
+        lambda: {
+            "reachable": True,
+            "service": "checkout-api",
+            "version": "1.1.0",
+        },
+    )
+
+    monkeypatch.setattr(
+        mcp_server,
+        "load_deployment_history",
+        lambda: {
+            "error": "Deployment history file not found",
+        },
+    )
+
+    result = mcp_server.prepare_rollback()
+
+    assert result["ready"] is False
+    assert "deployment history" in result["error"].lower()
+
+
+def test_prepare_rollback_when_already_healthy_version(monkeypatch):
+    monkeypatch.setattr(
+        mcp_server,
+        "fetch_service_health",
+        lambda: {
+            "reachable": True,
+            "service": "checkout-api",
+            "status": "healthy",
+            "version": "1.0.0",
+        },
+    )
+
+    monkeypatch.setattr(
+        mcp_server,
+        "load_deployment_history",
+        lambda: {
+            "deployments": [
+                {
+                    "deployment_id": "deploy-001",
+                    "version": "1.0.0",
+                    "deployed_at": "2026-08-28T06:45:00Z",
+                    "status": "healthy",
+                },
+            ],
+        },
+    )
+
+    result = mcp_server.prepare_rollback()
+
+    assert result["ready"] is False
+    assert result["rollback_needed"] is False
+    assert result["current_version"] == "1.0.0"
+def test_execute_rollback_success(monkeypatch):
+    monkeypatch.setattr(
+        mcp_server,
+        "prepare_rollback",
+        lambda: {
+            "ready": True,
+            "service": "checkout-api",
+            "current_version": "1.1.0",
+            "target_version": "1.0.0",
+            "target_deployment_id": "deploy-001",
+        },
+    )
+
+    captured = {}
+
+    class FakeResult:
+        returncode = 0
+        stdout = "container recreated\n"
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs["env"]
+        return FakeResult()
+
+    monkeypatch.setattr(mcp_server.subprocess, "run", fake_run)
+
+    result = mcp_server.execute_rollback("1.0.0")
+
+    assert result["executed"] is True
+    assert result["previous_version"] == "1.1.0"
+    assert result["target_version"] == "1.0.0"
+    assert result["verification_required"] is True
+
+    assert captured["command"] == [
+        "docker",
+        "compose",
+        "up",
+        "-d",
+        "--force-recreate",
+        "--no-build",
+        "checkout-api",
+    ]
+
+    assert captured["env"]["SERVICE_VERSION"] == "1.0.0"
+    assert captured["env"]["DEGRADED"] == "false"
+
+
+def test_execute_rollback_rejects_wrong_target(monkeypatch):
+    monkeypatch.setattr(
+        mcp_server,
+        "prepare_rollback",
+        lambda: {
+            "ready": True,
+            "target_version": "1.0.0",
+        },
+    )
+
+    result = mcp_server.execute_rollback("0.9.0")
+
+    assert result["executed"] is False
+    assert "does not match" in result["error"]
+
+
+def test_execute_rollback_rejects_unready_plan(monkeypatch):
+    monkeypatch.setattr(
+        mcp_server,
+        "prepare_rollback",
+        lambda: {
+            "ready": False,
+            "error": "No known healthy deployment is available for rollback.",
+        },
+    )
+
+    result = mcp_server.execute_rollback("1.0.0")
+
+    assert result["executed"] is False
+    assert "healthy deployment" in result["error"].lower()
+
+
+def test_execute_rollback_handles_docker_missing(monkeypatch):
+    monkeypatch.setattr(
+        mcp_server,
+        "prepare_rollback",
+        lambda: {
+            "ready": True,
+            "target_version": "1.0.0",
+        },
+    )
+
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError
+
+    monkeypatch.setattr(mcp_server.subprocess, "run", fake_run)
+
+    result = mcp_server.execute_rollback("1.0.0")
+
+    assert result["executed"] is False
+    assert result["error"] == "Docker CLI not found."
+
+
+def test_execute_rollback_handles_timeout(monkeypatch):
+    monkeypatch.setattr(
+        mcp_server,
+        "prepare_rollback",
+        lambda: {
+            "ready": True,
+            "target_version": "1.0.0",
+        },
+    )
+
+    def fake_run(*args, **kwargs):
+        raise mcp_server.subprocess.TimeoutExpired(
+            cmd="docker compose",
+            timeout=30,
+        )
+
+    monkeypatch.setattr(mcp_server.subprocess, "run", fake_run)
+
+    result = mcp_server.execute_rollback("1.0.0")
+
+    assert result["executed"] is False
+    assert result["error"] == "Rollback command timed out."
