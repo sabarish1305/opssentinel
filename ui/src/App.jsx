@@ -64,7 +64,7 @@ function App() {
           {
             level: "L3",
             name: "Act",
-            status: "active",
+            status: "locked",
             label: "Approval Required",
           },
         ]
@@ -378,8 +378,8 @@ function App() {
             </div>
 
             <button onClick={() => setPhase("investigating")}>
-              <CheckCircle2 size={18} />
-              Recovery Complete
+              <RotateCcw size={18} />
+              Reset Demo Scenario
             </button>
           </div>
         )}
